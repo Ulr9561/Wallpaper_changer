@@ -19,9 +19,10 @@ class WallpaperWorker(
     }
 
     override fun doWork(): Result {
-        Log.d(TAG, "Début de l'exécution du Worker")
+        Log.d("WallpaperWorker", "Starting wallpaper change task")
 
         val folderUriString = inputData.getString("folder_uri")
+
         if (folderUriString == null) {
             Log.e(TAG, "URI du dossier non fourni")
             return Result.failure()

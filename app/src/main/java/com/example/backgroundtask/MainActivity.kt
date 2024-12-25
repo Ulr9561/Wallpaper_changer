@@ -15,7 +15,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -33,6 +39,7 @@ import com.example.backgroundtask.ui.theme.BackgroundTaskTheme
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -49,16 +56,18 @@ class MainActivity : ComponentActivity() {
 
     private val folderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let {
-            Log.d(TAG, "Nouveau dossier sélectionné: ${it.path}")
-            // Persist permission
-            contentResolver.takePersistableUriPermission(
-                it,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-            selectedFolderUri = it
-            saveFolderUri(it)
-            loadWallpapers(it)
+            handleFolderSelect(it)
         }
+    }
+
+    private fun handleFolderSelect(uri: Uri) {
+        contentResolver.takePersistableUriPermission(
+            uri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION
+        )
+        selectedFolderUri = uri
+        saveFolderUri(uri)
+        loadWallpapers(uri)
     }
 
     private fun saveFolderUri(uri: Uri) {
@@ -67,6 +76,36 @@ class MainActivity : ComponentActivity() {
             .edit()
             .putString(FOLDER_URI_KEY, uri.toString())
             .apply()
+    }
+
+    private val imagePicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        uris?.let { selectedUris ->
+            handleNewImages(selectedUris)
+        }
+    }
+
+    private fun handleNewImages(uris: List<Uri>) {
+        selectedFolderUri?.let { folderUri ->
+            scope.launch(Dispatchers.IO) {
+                for (imageUri in uris) {
+                    try {
+                        val destinationFolder = DocumentFile.fromTreeUri(this@MainActivity, folderUri)
+                        val sourceFile = contentResolver.openInputStream(imageUri)?.use { input ->
+                            val fileName = imageUri.lastPathSegment ?: "image_${System.currentTimeMillis()}.jpg"
+                            val newFile = destinationFolder?.createFile("image/jpeg", fileName)
+                            newFile?.let { file ->
+                                contentResolver.openOutputStream(file.uri)?.use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erreur lors de la copie de l'image: ${e.message}")
+                    }
+                }
+                loadWallpapers(folderUri)
+            }
+        }
     }
 
     private fun loadSavedFolderUri() {
@@ -78,6 +117,8 @@ class MainActivity : ComponentActivity() {
             loadWallpapers(Uri.parse(it))
         }
     }
+
+
 
     private fun loadWallpapers(uri: Uri) {
         Log.d(TAG, "Chargement des fonds d'écran depuis: ${uri.path}")
@@ -118,6 +159,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             BackgroundTaskTheme {
                 val context = LocalContext.current
+
+
                 Scaffold(
                     modifier = Modifier.fillMaxSize()
                 ) { padding ->
@@ -127,33 +170,49 @@ class MainActivity : ComponentActivity() {
                             .padding(padding),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // Folder selection button
-                        Button(
-                            onClick = { folderPicker.launch(null) },
-                            modifier = Modifier.padding(16.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize(),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Sélectionner le dossier des fonds d'écran")
+
+
+                            if (selectedFolderUri == null) {
+                                // Afficher le bouton de sélection de dossier uniquement si aucun dossier n'est sélectionné
+                                Button(
+                                    onClick = { folderPicker.launch(null) },
+                                    modifier = Modifier.padding(16.dp)
+                                ) {
+                                    Text("Sélectionner le dossier des fonds d'écran")
+                                }
+                            } else {
+
+                                // Afficher le bouton d'ajout d'images uniquement si un dossier est sélectionné
+                                Button(
+                                    onClick = { imagePicker.launch(arrayOf("image/*")) },
+                                    modifier = Modifier.padding(16.dp)
+                                ) {
+                                    Text("Ajouter des images")
+                                }
+                            }
+
                         }
 
-                        // Display selected folder path
-                        selectedFolderUri?.let {
-                            Text(
-                                "Dossier sélectionné: ${it.path}",
-                                modifier = Modifier.padding(8.dp)
-                            )
-                        }
+
+                      Text(
+                          "Fréquence: 15 minutes",
+                          modifier = Modifier.padding(bottom = 8.dp)
+                      )
 
                         // List of wallpapers
-                        LazyColumn(
+                        WallpaperGrid(
+                            wallpapers = wallpaperFiles,
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
-                                .padding(16.dp)
-                        ) {
-                            items(wallpaperFiles) { file ->
-                                WallpaperItem(file = file)
-                            }
-                        }
+                                .padding(horizontal = 8.dp)
+                        )
+
 
                         Row(
                             modifier = Modifier
@@ -186,23 +245,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun scheduleWallpaperChange() {
+
         Log.d(TAG, "Programmation du changement de fond d'écran")
         selectedFolderUri?.let { uri ->
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
                 .build()
 
-            val workRequest = OneTimeWorkRequestBuilder<WallpaperWorker>()
+            val workRequest = PeriodicWorkRequestBuilder<WallpaperWorker>(
+                15, TimeUnit.MINUTES)
                 .setConstraints(constraints)
                 .setInputData(workDataOf("folder_uri" to uri.toString()))
                 .build()
 
-            WorkManager.getInstance(application).enqueueUniqueWork(
+            WorkManager.getInstance(application).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
+                ExistingPeriodicWorkPolicy.REPLACE,
                 workRequest
             )
-            Log.d(TAG, "Tâche programmée avec succès")
         }
     }
 
@@ -210,46 +270,72 @@ class MainActivity : ComponentActivity() {
         Log.d(TAG, "Annulation de la tâche de changement de fond d'écran")
         WorkManager.getInstance(this).cancelUniqueWork(WORK_NAME)
     }
+
     @Composable
-    fun WallpaperItem(file: DocumentFile) {
+    fun WallpaperGrid(
+        wallpapers: List<DocumentFile>,
+        modifier: Modifier = Modifier
+    ) {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 150.dp),
+            contentPadding = PaddingValues(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = modifier
+        ) {
+            items(wallpapers) { file ->
+                WallpaperGridItem(file = file)
+            }
+        }
+    }
+
+    @Composable
+    fun WallpaperGridItem(file: DocumentFile) {
         Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp)
-                .border(1.dp, MaterialTheme.colorScheme.outline, shape = MaterialTheme.shapes.medium)
+                .aspectRatio(1f) // Garde un ratio carré
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outline,
+                    shape = MaterialTheme.shapes.small
+                ),
+            shape = MaterialTheme.shapes.small
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
-                AsyncImage(
-                    model = file.uri,
-                    contentDescription = "Aperçu",
+                // Image
+                Box(
                     modifier = Modifier
-                        .width(100.dp)
-                        .height(100.dp)
-                        .clip(MaterialTheme.shapes.medium),
-                    contentScale = ContentScale.Crop
-                )
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    AsyncImage(
+                        model = file.uri,
+                        contentDescription = "Aperçu",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(MaterialTheme.shapes.small),
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
                 Column(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 16.dp)
+                        .fillMaxWidth()
+                        .padding(4.dp)
                 ) {
                     Text(
-                        text = file.name ?: "Sans nom",
-                        style = MaterialTheme.typography.titleMedium
+                        text = file.name?.let {
+                            if (it.length > 20) it.take(17) + "..." else it
+                        } ?: "Sans nom",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Taille: ${formatFileSize(file.length())}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        text = "Modifié le: ${formatDate(file.lastModified())}",
-                        style = MaterialTheme.typography.bodySmall
+                        text = formatFileSize(file.length()),
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
             }
@@ -267,4 +353,72 @@ class MainActivity : ComponentActivity() {
     private fun formatDate(timestamp: Long): String {
         return SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))
     }
+
+    @Composable
+    fun FrequencyDialog(
+        currentFrequency: Long,
+        onDismiss: () -> Unit,
+        onConfirm: (Long) -> Unit
+    ) {
+        var frequency by remember { mutableStateOf(currentFrequency.toString()) }
+        var error by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Définir la fréquence") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = frequency,
+                        onValueChange = {
+                            frequency = it
+                            error = null
+                        },
+                        label = { Text("Minutes") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = error != null
+                    )
+                    error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    Text(
+                        "La fréquence doit être entre 5 minutes et 3 heures (180 minutes)",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val frequencyValue = frequency.toLongOrNull()
+                        when {
+                            frequencyValue == null -> {
+                                error = "Veuillez entrer un nombre valide"
+                            }
+                            frequencyValue < 5 || frequencyValue > 180 -> {
+                                error = "La fréquence doit être entre 5 et 180 minutes"
+                            }
+                            else -> {
+                                onConfirm(frequencyValue)
+                            }
+                        }
+                    }
+                ) {
+                    Text("Confirmer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
 }
+
